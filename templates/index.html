@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media URL Capture GUI</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; background: #f7f7f8; color: #222; }
+    .card { background: white; border-radius: 12px; padding: 20px; max-width: 1000px; box-shadow: 0 2px 14px rgba(0,0,0,.08); }
+    label { display: block; font-weight: 700; margin-top: 14px; }
+    input { width: 100%; box-sizing: border-box; padding: 10px; margin-top: 6px; border: 1px solid #bbb; border-radius: 8px; font-size: 14px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    button { margin-top: 18px; padding: 11px 16px; border: 0; border-radius: 8px; background: #222; color: white; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    pre { white-space: pre-wrap; background: #111; color: #e6e6e6; padding: 14px; border-radius: 8px; max-height: 260px; overflow: auto; }
+    textarea { width: 100%; min-height: 180px; box-sizing: border-box; padding: 10px; border: 1px solid #bbb; border-radius: 8px; font-family: Consolas, monospace; }
+    .hint { color: #555; font-size: 13px; margin-top: 6px; }
+    .status { font-weight: 700; margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Media URL Capture GUI</h1>
+    <p>Launches a visible Chrome window, lets you authenticate inside that browser, then captures likely media URLs while the video plays.</p>
+
+    <label for="url">Page URL</label>
+    <input id="url" placeholder="https://...">
+
+    <label for="profile_dir">Browser profile directory</label>
+    <input id="profile_dir" value=".playwright_profile">
+    <div class="hint">Use the same profile folder every time if you want cookies/login state to persist.</div>
+
+    <div class="row">
+      <div>
+        <label for="wait_before_capture">Wait before capture (seconds)</label>
+        <input id="wait_before_capture" type="number" value="60" min="0">
+      </div>
+      <div>
+        <label for="timeout_seconds">Capture duration (seconds)</label>
+        <input id="timeout_seconds" type="number" value="120" min="1">
+      </div>
+    </div>
+
+    <button id="startBtn" onclick="startCapture()">Launch Browser & Capture</button>
+
+    <div class="status" id="status">Status: idle</div>
+
+    <h2>Captured URLs</h2>
+    <textarea id="urls" readonly></textarea>
+    <button onclick="copyUrls()">Copy URLs</button>
+
+    <h2>Logs</h2>
+    <pre id="logs"></pre>
+  </div>
+
+<script>
+let currentJobId = null;
+let pollTimer = null;
+
+async function startCapture() {
+  const startBtn = document.getElementById('startBtn');
+  startBtn.disabled = true;
+  document.getElementById('status').textContent = 'Status: starting';
+  document.getElementById('logs').textContent = '';
+  document.getElementById('urls').value = '';
+
+  const payload = {
+    url: document.getElementById('url').value,
+    profile_dir: document.getElementById('profile_dir').value,
+    wait_before_capture: Number(document.getElementById('wait_before_capture').value),
+    timeout_seconds: Number(document.getElementById('timeout_seconds').value)
+  };
+
+  const res = await fetch('/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById('status').textContent = 'Status: error - ' + data.error;
+    startBtn.disabled = false;
+    return;
+  }
+
+  currentJobId = data.job_id;
+  pollTimer = setInterval(pollStatus, 1000);
+}
+
+async function pollStatus() {
+  if (!currentJobId) return;
+
+  const res = await fetch('/status/' + currentJobId);
+  const data = await res.json();
+
+  document.getElementById('status').textContent = 'Status: ' + data.status;
+  document.getElementById('logs').textContent = (data.logs || []).join('\n');
+  document.getElementById('urls').value = (data.urls || []).join('\n');
+
+  if (data.error) {
+    document.getElementById('logs').textContent += '\nERROR: ' + data.error;
+  }
+
+  if (data.status === 'complete' || data.status === 'error') {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+async function copyUrls() {
+  const text = document.getElementById('urls').value;
+  await navigator.clipboard.writeText(text);
+}
+</script>
+</body>
+</html>
