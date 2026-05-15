@@ -117,7 +117,7 @@ def start_capture():
 
     wc_raw = data.get("wait_before_capture")
     if wc_raw is None:
-        wait_before_capture = 60
+        wait_before_capture = 15
     else:
         try:
             wait_before_capture = int(wc_raw)
@@ -128,7 +128,7 @@ def start_capture():
 
     ts_raw = data.get("timeout_seconds")
     if ts_raw is None:
-        timeout_seconds = 120
+        timeout_seconds = 45
     else:
         try:
             timeout_seconds = int(ts_raw)

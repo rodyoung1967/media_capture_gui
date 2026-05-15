@@ -267,8 +267,8 @@ Quick fixes grouped by symptom. Prefer **§ Exact instructions: CDP mode** whene
 | Field | Default | Description |
 |---|---|---|
 | Profile Directory | `.playwright_profile` | Chrome user data directory (persists cookies/login state) |
-| Wait Before Capture | `60` seconds | Time given to log in and start video playback before capture begins |
-| Timeout | `120` seconds | Duration to listen for media URLs after the wait period |
+| Wait Before Capture | `15` seconds | Time given to log in and start video playback before capture begins |
+| Timeout | `45` seconds | Duration to listen for media URLs after the wait period |
 
 ## Login, Google sign-in, and the Playwright profile
 
