@@ -1,4 +1,7 @@
+# Playwright Chrome profile — local cookies/cache/sessions; do not commit
+.playwright_profile
 .playwright_profile/
+.playwright_profile.bak-*/
 .venv/
 __pycache__/
 *.py[cod]
