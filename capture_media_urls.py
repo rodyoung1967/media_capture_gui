@@ -190,8 +190,8 @@ def extract_mux_stream_urls(url: str) -> list[str]:
 def capture_media_urls(
     url: str,
     profile_dir: str = ".playwright_profile",
-    timeout_seconds: int = 45,
-    wait_before_capture: int = 15,
+    timeout_seconds: int = 30,
+    wait_before_capture: int = 10,
     logger: Callable[[str], None] | None = None,
 ) -> list[str]:
     """
