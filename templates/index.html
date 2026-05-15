@@ -57,7 +57,30 @@
 let currentJobId = null;
 let pollTimer = null;
 
+function resetCaptureUi() {
+  if (pollTimer != null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  document.getElementById('startBtn').disabled = false;
+}
+
 async function startCapture() {
+  const urlInput = document.getElementById('url');
+  urlInput.value = urlInput.value.trim();
+  const url = urlInput.value;
+  if (!url) {
+    document.getElementById('status').textContent =
+      'Status: error — enter a page URL first (streaming page to open in Chrome)';
+    return;
+  }
+
+  if (pollTimer != null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  currentJobId = null;
+
   const startBtn = document.getElementById('startBtn');
   startBtn.disabled = true;
   document.getElementById('status').textContent = 'Status: starting';
@@ -65,53 +88,105 @@ async function startCapture() {
   document.getElementById('urls').value = '';
 
   const payload = {
-    url: document.getElementById('url').value,
+    url,
     profile_dir: document.getElementById('profile_dir').value,
     wait_before_capture: Number(document.getElementById('wait_before_capture').value),
     timeout_seconds: Number(document.getElementById('timeout_seconds').value)
   };
 
-  const res = await fetch('/start', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  });
+  try {
+    const res = await fetch('/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
 
-  const data = await res.json();
-  if (!res.ok) {
-    document.getElementById('status').textContent = 'Status: error - ' + data.error;
-    startBtn.disabled = false;
-    return;
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      resetCaptureUi();
+      document.getElementById('status').textContent =
+        `Status: error — non-JSON response from server (${res.status})`;
+      return;
+    }
+
+    if (!res.ok) {
+      resetCaptureUi();
+      const msg = typeof data?.error === 'string' ? data.error : (`HTTP ${res.status}`);
+      document.getElementById('status').textContent = 'Status: error — ' + msg;
+      return;
+    }
+
+    if (!data.job_id) {
+      resetCaptureUi();
+      document.getElementById('status').textContent =
+        'Status: error — server did not return a job id';
+      return;
+    }
+
+    currentJobId = data.job_id;
+    pollTimer = setInterval(pollStatus, 1000);
+  } catch (e) {
+    resetCaptureUi();
+    document.getElementById('status').textContent =
+      `Status: error — ${e instanceof Error ? e.message : String(e)}`;
   }
-
-  currentJobId = data.job_id;
-  pollTimer = setInterval(pollStatus, 1000);
 }
 
 async function pollStatus() {
   if (!currentJobId) return;
 
-  const res = await fetch('/status/' + currentJobId);
-  const data = await res.json();
+  try {
+    const res = await fetch('/status/' + currentJobId);
 
-  document.getElementById('status').textContent = 'Status: ' + data.status;
-  document.getElementById('logs').textContent = (data.logs || []).join('\n');
-  document.getElementById('urls').value = (data.urls || []).join('\n');
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      resetCaptureUi();
+      currentJobId = null;
+      document.getElementById('status').textContent =
+        `Status: error — invalid JSON from /status (${res.status})`;
+      return;
+    }
 
-  if (data.error) {
-    document.getElementById('logs').textContent += '\nERROR: ' + data.error;
-  }
+    if (!res.ok) {
+      resetCaptureUi();
+      currentJobId = null;
+      const msg = typeof data?.error === 'string' ? data.error : (`HTTP ${res.status}`);
+      document.getElementById('status').textContent = 'Status: error — ' + msg;
+      return;
+    }
 
-  if (data.status === 'complete' || data.status === 'error') {
-    clearInterval(pollTimer);
-    pollTimer = null;
-    document.getElementById('startBtn').disabled = false;
+    document.getElementById('status').textContent = 'Status: ' + data.status;
+    document.getElementById('logs').textContent = (data.logs || []).join('\n');
+    document.getElementById('urls').value = (data.urls || []).join('\n');
+
+    if (data.error) {
+      document.getElementById('logs').textContent += '\nERROR: ' + data.error;
+    }
+
+    if (data.status === 'complete' || data.status === 'error') {
+      resetCaptureUi();
+      currentJobId = null;
+    }
+  } catch (e) {
+    resetCaptureUi();
+    currentJobId = null;
+    document.getElementById('status').textContent =
+      `Status: error — poll failed: ${e instanceof Error ? e.message : String(e)}`;
   }
 }
 
 async function copyUrls() {
   const text = document.getElementById('urls').value;
-  await navigator.clipboard.writeText(text);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    document.getElementById('status').textContent =
+      `Status: clipboard failed — ${e instanceof Error ? e.message : String(e)} (select URLs and copy manually)`;
+  }
 }
 </script>
 </body>
