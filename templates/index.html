@@ -227,6 +227,19 @@
       font-style: italic;
     }
 
+    .download-status {
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 90px;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
     @media (max-width: 680px) {
       .row { grid-template-columns: 1fr; }
       .card { padding: 22px 20px 28px; }
@@ -269,6 +282,28 @@
 
     <h2>Logs</h2>
     <pre id="logs"></pre>
+
+    <h2>Download Stream</h2>
+    <p class="hint">Paste a captured <code>.m3u8</code>, <code>.mpd</code>, <code>.mp4</code>, or similar media URL, choose an output path, and ffmpeg will save it locally.</p>
+
+    <label for="download_url">Media URL</label>
+    <input id="download_url" placeholder="https://example.com/stream.m3u8">
+    <button type="button" class="secondary" onclick="useFirstCapturedUrl()">Use first captured URL</button>
+
+    <label for="output_file">Output file path</label>
+    <input id="output_file" placeholder="C:\Users\rodne\Videos\downloaded_video.mkv">
+
+    <label for="download_cookie">Cookie header (optional)</label>
+    <input id="download_cookie" placeholder="session_id=abc123">
+
+    <div class="button-row">
+      <button id="downloadBtn" type="button" onclick="startDownload()">Download stream</button>
+      <button type="button" class="secondary" onclick="pollDownloadStatusOnce()">Refresh download status</button>
+    </div>
+
+    <h2>Download Status</h2>
+    <pre id="download_status" class="download-status">Status: idle</pre>
+
   </div>
 
 <script>
@@ -406,6 +441,138 @@ async function copyUrls() {
       `Status: clipboard failed — ${e instanceof Error ? e.message : String(e)} (select URLs and copy manually)`;
   }
 }
+
+let currentDownloadStatusFile = null;
+let downloadPollTimer = null;
+
+function resetDownloadUi() {
+  if (downloadPollTimer != null) {
+    clearInterval(downloadPollTimer);
+    downloadPollTimer = null;
+  }
+  document.getElementById('downloadBtn').disabled = false;
+}
+
+function useFirstCapturedUrl() {
+  const firstUrl = document.getElementById('urls').value
+    .split('\n')
+    .map(line => line.trim())
+    .find(Boolean);
+  if (firstUrl) {
+    document.getElementById('download_url').value = firstUrl;
+    document.getElementById('download_status').textContent = 'Loaded first captured URL into Media URL.';
+  } else {
+    document.getElementById('download_status').textContent = 'No captured URL available yet.';
+  }
+}
+
+function formatDownloadStatus(data) {
+  const lines = [];
+  lines.push('State: ' + (data.status || '(unknown)'));
+  lines.push('Message: ' + (data.progress || ''));
+  if (data.output_file) lines.push('Output: ' + data.output_file);
+  if (data.output_exists === true) {
+    const mb = data.output_size_mb != null ? data.output_size_mb : 0;
+    const bytes = data.output_size_bytes != null ? data.output_size_bytes : 0;
+    lines.push('On disk: ' + mb + ' MB (' + bytes + ' bytes)');
+  } else if (data.output_exists === false) {
+    lines.push('On disk: not created yet');
+  }
+  if (data.hint) lines.push('Hint: ' + data.hint);
+  if (data.server_time) lines.push('Checked: ' + data.server_time);
+  if (data.exit_code_formatted) lines.push('Exit code: ' + data.exit_code_formatted);
+  if (data.error) lines.push('\nError:\n' + data.error);
+  return lines.join('\n');
+}
+
+async function startDownload() {
+  const downloadUrl = document.getElementById('download_url').value.trim();
+  const outputFile = document.getElementById('output_file').value.trim();
+  const downloadCookie = document.getElementById('download_cookie').value.trim();
+
+  if (!downloadUrl) {
+    document.getElementById('download_status').textContent = 'Status: error — enter a media URL first';
+    return;
+  }
+  if (!outputFile) {
+    document.getElementById('download_status').textContent = 'Status: error — enter an output file path first';
+    return;
+  }
+
+  resetDownloadUi();
+  document.getElementById('downloadBtn').disabled = true;
+  document.getElementById('download_status').textContent = 'Status: starting download...';
+
+  try {
+    const res = await fetch('/download-stream', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        download_url: downloadUrl,
+        output_file: outputFile,
+        download_cookie: downloadCookie
+      })
+    });
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      resetDownloadUi();
+      document.getElementById('download_status').textContent =
+        `Status: error — non-JSON response from server (${res.status})`;
+      return;
+    }
+
+    if (!res.ok) {
+      resetDownloadUi();
+      const msg = typeof data?.error === 'string' ? data.error : (`HTTP ${res.status}`);
+      document.getElementById('download_status').textContent = 'Status: error — ' + msg;
+      return;
+    }
+
+    currentDownloadStatusFile = data.status_file;
+    document.getElementById('download_status').textContent =
+      `${data.message || 'Download started'}\nOutput: ${data.output_file || outputFile}`;
+    downloadPollTimer = setInterval(pollDownloadStatusOnce, 1500);
+    pollDownloadStatusOnce();
+  } catch (e) {
+    resetDownloadUi();
+    document.getElementById('download_status').textContent =
+      `Status: error — ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+async function pollDownloadStatusOnce() {
+  if (!currentDownloadStatusFile) {
+    document.getElementById('download_status').textContent = 'Status: idle — no active download';
+    return;
+  }
+
+  try {
+    const res = await fetch('/check-download-status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file: currentDownloadStatusFile})
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      document.getElementById('download_status').textContent =
+        'Status: error — ' + (data.error || `HTTP ${res.status}`);
+      resetDownloadUi();
+      return;
+    }
+    document.getElementById('download_status').textContent = formatDownloadStatus(data);
+    if (data.status === 'completed' || data.status === 'failed' || data.status === 'error') {
+      resetDownloadUi();
+    }
+  } catch (e) {
+    resetDownloadUi();
+    document.getElementById('download_status').textContent =
+      `Status: error — download status poll failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 </script>
 </body>
 </html>

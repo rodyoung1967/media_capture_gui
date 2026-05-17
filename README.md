@@ -43,6 +43,9 @@ The app listens on **http://127.0.0.1:5000** by default if you omit **`PORT`**. 
 ```bash
 PORT=5001 .venv/bin/python app.py
 ```
+```` windows powershell
+$env:PORT=5001; .\.venv\Scripts\python.exe app.py
+````
 
 Then open **http://127.0.0.1:5001** in your browser.
 
@@ -362,4 +365,38 @@ Heavy SSO flows or occasional GPU quirks can wedge the renderer so the tab spinn
 
 3. If redirects are extremely slow, increase **`PAGE_GOTO_TIMEOUT_MS`** (milliseconds; default `180000`, max `600000`).
 4. For **Google / SSO**, prefer logging in via **standalone** Chrome with the same **`--user-data-dir`**, **⌘Q**, then capture — scripted Google sign-in inside Playwright is often blocked or unstable and can look like a jammed loader.
+
+*************************8
+THIS worked:
+**************************
+Do this:
+
+1. Open Chrome manually first
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir="C:\Users\rodne\PycharmProjects\media_capture_gui\.playwright_profile" --remote-debugging-port=9222 about:blank
+
+Leave that Chrome window open.
+
+2. Start Flask with CDP set
+cd "C:\Users\rodne\PycharmProjects\media_capture_gui"
+
+$env:PLAYWRIGHT_CDP_URL="http://127.0.0.1:9222"
+$env:PORT=5001
+
+.\.venv\Scripts\python.exe app.py
+3. Open the GUI
+http://127.0.0.1:5001
+
+Then click Launch Browser & Capture.
+
+Expected behavior: Chrome should already be open, and clicking the button should open a new tab in that existing Chrome window.
+
+If nothing happens, check the Flask PowerShell window immediately after clicking. The key log should say:
+
+Connecting to your Chrome session over CDP
+
+If it says:
+
+Playwright-managed Chrome
+
+then PLAYWRIGHT_CDP_URL still was not set in the same PowerShell session that started Flask.
 

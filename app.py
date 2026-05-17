@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
@@ -19,6 +23,36 @@ try:
     CAPTURE_JOB_STORE_MAX = max(10, int(os.environ.get("CAPTURE_JOB_STORE_MAX", "100")))
 except ValueError:
     CAPTURE_JOB_STORE_MAX = 100
+
+
+DOWNLOAD_STATUS_VERSION = 2
+
+
+def _console_print(msg: str) -> None:
+    """Avoid UnicodeEncodeError on Windows terminals when logging from worker threads."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
+def _format_subprocess_returncode(rc: int | None) -> str:
+    if rc is None:
+        return "(none)"
+    if rc < 0 or rc > 255:
+        u32 = rc & 0xFFFFFFFF
+        return f"{rc} (unsigned 32-bit: {u32} / 0x{u32:08x})"
+    return str(rc)
+
+
+def _tail_stderr(stderr: str, max_chars: int = 12000) -> str:
+    """ffmpeg may print a long banner first; useful errors are usually near the end."""
+    if not stderr:
+        return ""
+    text = stderr.strip()
+    if len(text) <= max_chars:
+        return text
+    return f"... ({len(text) - max_chars} chars omitted from start of stderr) ...\n{text[-max_chars:]}"
 
 
 @dataclass
@@ -177,6 +211,219 @@ def job_status(job_id: str):
                 "finished_at": job.finished_at,
             }
         )
+
+
+@app.route("/download-stream", methods=["POST"])
+def download_stream():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        # Allow form posts too, in case you later wire this to a normal HTML form.
+        data = request.form.to_dict()
+
+    download_url = (data.get("download_url") or "").strip()
+    output_file = (data.get("output_file") or "").strip()
+    download_cookie = (data.get("download_cookie") or "").strip()
+
+    if not download_url:
+        return _bad_json("download_url is required")
+    if not output_file:
+        return _bad_json("output_file is required")
+    if shutil.which("ffmpeg") is None:
+        return _bad_json("ffmpeg not found on PATH")
+
+    output_path = Path(output_file).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    status_file = output_path.parent / f".{output_path.name}.download_status.json"
+    try:
+        if status_file.is_file():
+            status_file.unlink()
+    except OSError:
+        pass
+
+    initial_status = {
+        "status_version": DOWNLOAD_STATUS_VERSION,
+        "status": "queued",
+        "output_file": str(output_path),
+        "progress": "Queued; starting download...",
+        "error": None,
+    }
+    status_file.write_text(json.dumps(initial_status), encoding="utf-8")
+
+    def write_status(payload: dict) -> None:
+        status_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def run_download() -> None:
+        try:
+            write_status(
+                {
+                    "status_version": DOWNLOAD_STATUS_VERSION,
+                    "status": "starting",
+                    "output_file": str(output_path),
+                    "progress": "Starting ffmpeg...",
+                    "error": None,
+                }
+            )
+            _console_print(f"[Download] Starting download to: {output_path}")
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-user_agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "-i",
+                download_url,
+            ]
+
+            headers: List[str] = []
+            if download_cookie:
+                headers.append(f"Cookie: {download_cookie}")
+            if headers:
+                ffmpeg_cmd.extend(["-headers", "\r\n".join(headers) + "\r\n"])
+
+            ffmpeg_cmd.extend(["-c", "copy", "-y", str(output_path)])
+            _console_print("[Download] Running ffmpeg...")
+
+            result = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+            if result.returncode == 0:
+                file_size = output_path.stat().st_size if output_path.exists() else 0
+                write_status(
+                    {
+                        "status_version": DOWNLOAD_STATUS_VERSION,
+                        "status": "completed",
+                        "output_file": str(output_path),
+                        "file_size_mb": round(file_size / 1024 / 1024, 1),
+                        "progress": f"Download completed ({file_size / 1024 / 1024:.1f} MB)",
+                        "error": None,
+                    }
+                )
+                _console_print(f"[Download] OK completed: {output_path} ({file_size / 1024 / 1024:.1f} MB)")
+            else:
+                err_raw = _tail_stderr(result.stderr or "", 12000)
+                rc_fmt = _format_subprocess_returncode(result.returncode)
+                write_status(
+                    {
+                        "status_version": DOWNLOAD_STATUS_VERSION,
+                        "status": "failed",
+                        "output_file": str(output_path),
+                        "progress": "Download failed",
+                        "error": err_raw if err_raw else f"ffmpeg exit code {rc_fmt} (no stderr text)",
+                        "exit_code": result.returncode,
+                        "exit_code_formatted": rc_fmt,
+                    }
+                )
+                _console_print(f"[Download] FAIL exit code {rc_fmt}")
+        except Exception as exc:
+            err_text = str(exc).encode("ascii", errors="replace").decode("ascii")
+            write_status(
+                {
+                    "status_version": DOWNLOAD_STATUS_VERSION,
+                    "status": "error",
+                    "output_file": str(output_path),
+                    "progress": "Download error",
+                    "error": f"Exception: {err_text}",
+                }
+            )
+            _console_print(f"[Download] ERROR for {output_path}: {err_text}")
+
+    thread = threading.Thread(target=run_download, daemon=True)
+    thread.start()
+
+    return jsonify(
+        {
+            "message": "Download started. Monitoring status...",
+            "output_file": str(output_path),
+            "status_file": str(status_file),
+        }
+    )
+
+
+def _read_download_status_file() -> tuple[str | None, dict | None]:
+    status_file = ""
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        status_file = (payload.get("file") or "").strip()
+    if not status_file:
+        status_file = (request.args.get("file") or "").strip()
+    if not status_file:
+        return "No status file provided", None
+
+    try:
+        status_file_path = Path(status_file)
+        if not status_file_path.is_file():
+            return None, {
+                "status_version": DOWNLOAD_STATUS_VERSION,
+                "status": "pending",
+                "progress": "Download initializing...",
+                "error": None,
+            }
+        return None, json.loads(status_file_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return f"Could not read status: {exc}", None
+
+
+def _enrich_download_status(data: dict) -> dict:
+    out = dict(data)
+    out_path = (out.get("output_file") or "").strip()
+    if out_path:
+        p = Path(out_path)
+        try:
+            if p.is_file():
+                size = p.stat().st_size
+                out["output_exists"] = True
+                out["output_size_bytes"] = size
+                out["output_size_mb"] = round(size / (1024 * 1024), 2)
+            else:
+                out["output_exists"] = False
+                out["output_size_bytes"] = 0
+                out["output_size_mb"] = None
+        except OSError:
+            out["output_exists"] = False
+            out["output_size_bytes"] = 0
+            out["output_size_mb"] = None
+
+    status = out.get("status") or ""
+    if status == "queued":
+        out["hint"] = "Queued: ffmpeg will start in a moment."
+    elif status == "starting":
+        out["hint"] = "ffmpeg is running. For long streams, the file size should grow over time."
+    elif status == "pending":
+        out["hint"] = "Waiting for the status file. If this sticks, restart the app and submit again."
+    elif status == "completed":
+        out["hint"] = "Finished. Open the output path in File Explorer and play the file."
+    elif status in ("failed", "error"):
+        out["hint"] = "See the error detail below. Common causes: bad URL, missing cookies, or unsupported input."
+    else:
+        out["hint"] = ""
+
+    if out.get("status_version") != DOWNLOAD_STATUS_VERSION:
+        out["hint"] = (
+            (out.get("hint") or "")
+            + " This status file is from an older server build. Delete the .download_status.json file and retry."
+        ).strip()
+    out["server_time"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return out
+
+
+@app.route("/check-download-status", methods=["GET", "POST"])
+def check_download_status():
+    err, data = _read_download_status_file()
+    if err:
+        return jsonify({"error": err}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid status payload"}), 400
+    return jsonify(_enrich_download_status(data))
 
 
 if __name__ == "__main__":
