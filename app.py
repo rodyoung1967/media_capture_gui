@@ -55,12 +55,57 @@ def _tail_stderr(stderr: str, max_chars: int = 12000) -> str:
     return f"... ({len(text) - max_chars} chars omitted from start of stderr) ...\n{text[-max_chars:]}"
 
 
+def cookie_header_from_playwright_records(cookies: object, media_url: str) -> str:
+    """
+    Build a single ``Cookie: ...`` value body for the host in ``media_url``,
+    matching Playwright ``context.cookies()`` records (domain/path aware enough for FFmpeg).
+    """
+    if not isinstance(cookies, list) or not media_url:
+        return ""
+    parsed = urlparse(media_url)
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return ""
+
+    scoped: List[tuple[int, str, str]] = []
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name")
+        value = c.get("value")
+        if not name or value is None:
+            continue
+        domain_raw = (c.get("domain") or "").strip()
+        domain = domain_raw.lstrip(".").lower()
+        if not domain:
+            continue
+        if hostname == domain or hostname.endswith("." + domain):
+            scoped.append((len(domain), str(name), str(value)))
+
+    scoped.sort(key=lambda t: -t[0])
+
+    seen_names: set[str] = set()
+    parts: List[str] = []
+    for _, nm, val in scoped:
+        if nm in seen_names:
+            continue
+        seen_names.add(nm)
+        parts.append(f"{nm}={val}")
+    return "; ".join(parts)
+
+
+def merge_cookie_header_values(*chunks: str) -> str:
+    """Join non-empty cookie header bodies; manual entries can supplement capture cookies."""
+    return "; ".join(ch.strip() for ch in chunks if ch and ch.strip())
+
+
 @dataclass
 class CaptureJob:
     id: str
     status: str = "starting"
     logs: List[str] = field(default_factory=list)
     urls: List[str] = field(default_factory=list)
+    cookies: List[dict] = field(default_factory=list)
     error: str | None = None
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
@@ -109,9 +154,14 @@ def run_capture_job(
             timeout_seconds=timeout_seconds,
             logger=lambda msg: add_log(job_id, msg),
         )
+        urls_payload = results.get("urls") if isinstance(results, dict) else results
+        cookie_payload = results.get("cookies") if isinstance(results, dict) else ()
+        if not isinstance(urls_payload, list):
+            urls_payload = []
 
         with jobs_lock:
-            jobs[job_id].urls = results
+            jobs[job_id].urls = urls_payload
+            jobs[job_id].cookies = list(cookie_payload) if isinstance(cookie_payload, list) else []
             jobs[job_id].status = "complete"
             jobs[job_id].finished_at = time.time()
             prune_terminal_jobs_unlocked()
@@ -206,6 +256,7 @@ def job_status(job_id: str):
                 "status": job.status,
                 "logs": job.logs,
                 "urls": job.urls,
+                "cookies": job.cookies,
                 "error": job.error,
                 "started_at": job.started_at,
                 "finished_at": job.finished_at,
@@ -223,6 +274,11 @@ def download_stream():
     download_url = (data.get("download_url") or "").strip()
     output_file = (data.get("output_file") or "").strip()
     download_cookie = (data.get("download_cookie") or "").strip()
+    capture_cookies_raw = data.get("cookies")
+    if isinstance(capture_cookies_raw, list):
+        capture_cookies = [c for c in capture_cookies_raw if isinstance(c, dict)]
+    else:
+        capture_cookies = []
 
     if not download_url:
         return _bad_json("download_url is required")
@@ -266,6 +322,16 @@ def download_stream():
             )
             _console_print(f"[Download] Starting download to: {output_path}")
 
+            from_capture = cookie_header_from_playwright_records(capture_cookies, download_url)
+            combined_cookie = merge_cookie_header_values(from_capture, download_cookie)
+            if from_capture:
+                _console_print("[Download] Applying cookies from last capture for this media host (plus any manual cookie box).")
+            elif capture_cookies:
+                _console_print(
+                    "[Download] Capture cookies were sent but none matched this URL’s hostname — "
+                    "try manual Cookie header or capture again after playback."
+                )
+
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-nostdin",
@@ -280,8 +346,8 @@ def download_stream():
             ]
 
             headers: List[str] = []
-            if download_cookie:
-                headers.append(f"Cookie: {download_cookie}")
+            if combined_cookie:
+                headers.append(f"Cookie: {combined_cookie}")
             if headers:
                 ffmpeg_cmd.extend(["-headers", "\r\n".join(headers) + "\r\n"])
 

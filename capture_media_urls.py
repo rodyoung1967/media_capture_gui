@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Set
+from typing import Any, Callable, Dict, List, Set
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -193,7 +193,7 @@ def capture_media_urls(
     timeout_seconds: int = 30,
     wait_before_capture: int = 10,
     logger: Callable[[str], None] | None = None,
-) -> list[str]:
+) -> Dict[str, Any]:
     """
     Captures likely media URLs from network traffic during a browsing session.
 
@@ -212,10 +212,14 @@ def capture_media_urls(
 
     This does not bypass security checks. It only captures URLs that load during
     a normal visible browser session.
+
+    Returns a dict ``{"urls": [...], "cookies": [...]}`` where ``cookies`` is the
+    Playwright ``BrowserContext`` cookie list (compatible with FFmpeg reuse).
     """
     found: Set[str] = set()
     derived_streams: Set[str] = set()
     all_results: list[str] = []
+    playwright_export_cookies: List[dict] = []
 
     def log(message: str) -> None:
         if logger:
@@ -368,6 +372,21 @@ def capture_media_urls(
             )
 
         finally:
+            try:
+                raw = context.cookies()
+                out_cookies: List[dict] = []
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, dict):
+                            out_cookies.append(item)
+                        elif hasattr(item, "items"):
+                            out_cookies.append(dict(item))
+                playwright_export_cookies = out_cookies
+                log(f"[cookies] Exported {len(playwright_export_cookies)} row(s) for FFmpeg session reuse.")
+            except Exception as exc:
+                log(f"[cookies] Could not read context cookies ({exc}); FFmpeg may lack logged-in session.")
+                playwright_export_cookies = []
+
             if page:
                 try:
                     page.close()
@@ -384,4 +403,4 @@ def capture_media_urls(
                 except Exception:
                     pass
 
-    return all_results
+    return {"urls": all_results, "cookies": playwright_export_cookies}

@@ -227,6 +227,22 @@
       font-style: italic;
     }
 
+    label.checkbox-inline {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-weight: 600;
+      margin-top: 14px;
+      cursor: pointer;
+      max-width: 44rem;
+    }
+
+    label.checkbox-inline input[type="checkbox"] {
+      margin-top: 4px;
+      width: auto;
+      flex-shrink: 0;
+    }
+
     .download-status {
       white-space: pre-wrap;
       word-break: break-word;
@@ -284,7 +300,7 @@
     <pre id="logs"></pre>
 
     <h2>Download Stream</h2>
-    <p class="hint">Paste a captured <code>.m3u8</code>, <code>.mpd</code>, <code>.mp4</code>, or similar media URL, choose an output path, and ffmpeg will save it locally.</p>
+    <p class="hint">Paste a captured <code>.m3u8</code>, <code>.mpd</code>, <code>.mp4</code>, or similar media URL. By default we also send <strong>cookies from the last capture</strong> for the same hostname FFmpeg uses (so logins line up with FFmpeg). You can add extras in the Cookie box.</p>
 
     <label for="download_url">Media URL</label>
     <input id="download_url" placeholder="https://example.com/stream.m3u8">
@@ -294,7 +310,12 @@
     <input id="output_file" placeholder="C:\Users\rodne\Videos\downloaded_video.mkv">
 
     <label for="download_cookie">Cookie header (optional)</label>
-    <input id="download_cookie" placeholder="session_id=abc123">
+    <input id="download_cookie" placeholder="session_id=abc123 (merged with capture cookies)">
+
+    <label class="checkbox-inline">
+      <input type="checkbox" id="reuse_capture_cookies" checked>
+      Reuse cookies from the last completed capture (same browser session)
+    </label>
 
     <div class="button-row">
       <button id="downloadBtn" type="button" onclick="startDownload()">Download stream</button>
@@ -309,6 +330,8 @@
 <script>
 let currentJobId = null;
 let pollTimer = null;
+/** Playwright cookie jars from the latest completed /status poll — sent to FFmpeg when enabled. */
+let captureSessionCookies = [];
 
 function resetCaptureUi() {
   if (pollTimer != null) {
@@ -339,6 +362,7 @@ async function startCapture() {
   document.getElementById('status').textContent = 'Status: starting';
   document.getElementById('logs').textContent = '';
   document.getElementById('urls').value = '';
+  captureSessionCookies = [];
 
   const payload = {
     url,
@@ -415,6 +439,11 @@ async function pollStatus() {
     document.getElementById('status').textContent = 'Status: ' + data.status;
     document.getElementById('logs').textContent = (data.logs || []).join('\n');
     document.getElementById('urls').value = (data.urls || []).join('\n');
+    if (Array.isArray(data.cookies)) {
+      captureSessionCookies = data.cookies;
+    } else {
+      captureSessionCookies = [];
+    }
 
     if (data.error) {
       document.getElementById('logs').textContent += '\nERROR: ' + data.error;
@@ -489,6 +518,7 @@ async function startDownload() {
   const downloadUrl = document.getElementById('download_url').value.trim();
   const outputFile = document.getElementById('output_file').value.trim();
   const downloadCookie = document.getElementById('download_cookie').value.trim();
+  const reuseCookies = document.getElementById('reuse_capture_cookies').checked;
 
   if (!downloadUrl) {
     document.getElementById('download_status').textContent = 'Status: error — enter a media URL first';
@@ -510,7 +540,8 @@ async function startDownload() {
       body: JSON.stringify({
         download_url: downloadUrl,
         output_file: outputFile,
-        download_cookie: downloadCookie
+        download_cookie: downloadCookie,
+        cookies: reuseCookies ? captureSessionCookies : []
       })
     });
 
