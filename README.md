@@ -377,10 +377,9 @@ Do this:
 Leave that Chrome window open.
 
 2. Start Flask with CDP set
-cd "C:\Users\rodne\PycharmProjects\media_capture_gui"
-
+cd C:\Users\rodne\PycharmProjects\media_capture_gui
 $env:PLAYWRIGHT_CDP_URL="http://127.0.0.1:9222"
-$env:PORT=5001
+python app.py
 
 .\.venv\Scripts\python.exe app.py
 3. Open the GUI
