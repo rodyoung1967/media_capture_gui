@@ -58,10 +58,11 @@ def _tail_stderr(stderr: str, max_chars: int = 12000) -> str:
 def cookie_header_from_playwright_records(cookies: object, media_url: str) -> str:
     """
     Build a single ``Cookie: ...`` value body for the host in ``media_url``,
-    matching Playwright ``context.cookies()`` records (domain/path aware enough for FFmpeg).
+    matching Playwright ``context.cookies()`` records.
     """
     if not isinstance(cookies, list) or not media_url:
         return ""
+
     parsed = urlparse(media_url)
     hostname = (parsed.hostname or "").lower()
     if not hostname:
@@ -201,7 +202,7 @@ def start_capture():
 
     wc_raw = data.get("wait_before_capture")
     if wc_raw is None:
-        wait_before_capture = 15
+        wait_before_capture = 30
     else:
         try:
             wait_before_capture = int(wc_raw)
@@ -212,7 +213,7 @@ def start_capture():
 
     ts_raw = data.get("timeout_seconds")
     if ts_raw is None:
-        timeout_seconds = 45
+        timeout_seconds = 120
     else:
         try:
             timeout_seconds = int(ts_raw)
@@ -325,12 +326,22 @@ def download_stream():
             from_capture = cookie_header_from_playwright_records(capture_cookies, download_url)
             combined_cookie = merge_cookie_header_values(from_capture, download_cookie)
             if from_capture:
-                _console_print("[Download] Applying cookies from last capture for this media host (plus any manual cookie box).")
+                _console_print("[Download] Applying cookies from last capture for this media host plus any manual cookie box.")
             elif capture_cookies:
                 _console_print(
-                    "[Download] Capture cookies were sent but none matched this URL’s hostname — "
-                    "try manual Cookie header or capture again after playback."
+                    "[Download] Capture cookies were sent but none matched this URL's hostname. "
+                    "Try manual Cookie header or capture again after playback."
                 )
+
+            headers: List[str] = []
+            if combined_cookie:
+                headers.append(f"Cookie: {combined_cookie}")
+
+            # Some protected Mux/Patreon playback URLs reject FFmpeg unless these browser-like
+            # headers are present. They do not bypass authorization; they only make FFmpeg's
+            # request look like the same ordinary browser session that discovered the URL.
+            headers.append("Referer: https://www.patreon.com/")
+            headers.append("Origin: https://www.patreon.com")
 
             ffmpeg_cmd = [
                 "ffmpeg",
@@ -341,17 +352,18 @@ def download_stream():
                 "-user_agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "-headers",
+                "\r\n".join(headers) + "\r\n",
+                "-protocol_whitelist",
+                "file,http,https,tcp,tls,crypto",
                 "-i",
                 download_url,
+                "-c",
+                "copy",
+                "-y",
+                str(output_path),
             ]
 
-            headers: List[str] = []
-            if combined_cookie:
-                headers.append(f"Cookie: {combined_cookie}")
-            if headers:
-                ffmpeg_cmd.extend(["-headers", "\r\n".join(headers) + "\r\n"])
-
-            ffmpeg_cmd.extend(["-c", "copy", "-y", str(output_path)])
             _console_print("[Download] Running ffmpeg...")
 
             result = subprocess.run(

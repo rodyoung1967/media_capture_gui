@@ -399,3 +399,40 @@ Playwright-managed Chrome
 
 then PLAYWRIGHT_CDP_URL still was not set in the same PowerShell session that started Flask.
 
+================
+1. Start-to-finish PowerShell steps:
+cd C:\Users\rodne\PycharmProjects\media_capture_gui
+
+2. Kill old Chrome:
+taskkill /F /IM chrome.exe
+
+3. Start Chrome with CDP:
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir="C:\Users\rodne\PycharmProjects\media_capture_gui\.playwright_profile" `
+  --new-window about:blank
+
+4. Open a second PowerShell:
+cd C:\Users\rodne\PycharmProjects\media_capture_gui
+$env:PLAYWRIGHT_CDP_URL="http://127.0.0.1:9222"
+python app.py
+
+5. http://127.0.0.1:5000 in your browser, click Launch Browser & Capture.
+
+In the app:
+
+Paste the Patreon URL.
+Set wait time to 15.
+Set capture time to 60.
+Click Launch browser / capture.
+In the Chrome window that opened earlier, log into Patreon if needed.
+Refresh the Patreon tab.
+Press play on the video.
+Let it play while capture runs.
+Copy the found .m3u8 / stream URL.
+Paste it into the download URL box.
+Set output like:
+  C:\Users\rodne\Videos\patreon_video.mp4
+
+
+
